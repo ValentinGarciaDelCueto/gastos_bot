@@ -29,6 +29,9 @@ class FakeWorksheet:
         for r in rows:
             self.rows.append([str(c) for c in r])
 
+    def delete_rows(self, index):
+        del self.rows[index - 1]
+
 
 # ---------------------------------------------------------------------------
 # parse_amount
@@ -170,6 +173,31 @@ def test_day_total_filtra_por_fecha():
     assert main.day_total(ws, "22/07/2026") == 13000
     assert main.day_total(ws, "21/07/2026") == 99999
     assert main.day_total(ws, "01/01/2026") == 0
+
+
+def test_delete_last_expense_borra_ultima_fila():
+    ws = FakeWorksheet(
+        [
+            main.HEADERS,
+            ["22/07/2026", "10:00", "combi", "10000"],
+            ["22/07/2026", "12:00", "snacks", "3000"],
+        ]
+    )
+    fila = main.delete_last_expense(ws)
+    assert fila == ["22/07/2026", "12:00", "snacks", "3000"]
+    assert ws.rows == [main.HEADERS, ["22/07/2026", "10:00", "combi", "10000"]]
+
+
+def test_delete_last_expense_solo_header_devuelve_none():
+    ws = FakeWorksheet([main.HEADERS])
+    assert main.delete_last_expense(ws) is None
+    assert ws.rows == [main.HEADERS]
+
+
+def test_delete_last_expense_hoja_vacia_devuelve_none():
+    ws = FakeWorksheet([])
+    assert main.delete_last_expense(ws) is None
+    assert ws.rows == []
 
 
 def test_month_total_filtra_por_mes():

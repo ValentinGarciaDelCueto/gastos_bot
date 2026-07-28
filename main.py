@@ -72,6 +72,44 @@ class Config:
     allowed_user_id: int = 0
 
 
+def _load_credentials_json() -> str:
+    """
+    Devuelve el JSON de la service account como texto. Dos formas:
+      - GOOGLE_CREDENTIALS_FILE=creds.json  -> lee ese archivo (lo más fácil).
+      - GOOGLE_CREDENTIALS={...}             -> el JSON pegado en una línea.
+    Si está seteado el archivo, tiene prioridad.
+    """
+    creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE", "").strip()
+    raw = os.environ.get("GOOGLE_CREDENTIALS", "").strip()
+
+    if creds_file:
+        if not os.path.isfile(creds_file):
+            raise SystemExit(
+                f"GOOGLE_CREDENTIALS_FILE apunta a un archivo que no existe: "
+                f"{creds_file!r}. Guardá el .json en la carpeta del proyecto."
+            )
+        with open(creds_file, encoding="utf-8") as f:
+            raw = f.read().strip()
+
+    if not raw:
+        raise SystemExit(
+            "Falta la credencial de Google. Elegí una opción:\n"
+            "  1) guardá el .json como creds.json y poné "
+            "GOOGLE_CREDENTIALS_FILE=creds.json\n"
+            "  2) pegá el JSON entero en GOOGLE_CREDENTIALS."
+        )
+
+    try:
+        json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise SystemExit(
+            "La credencial de Google no es un JSON válido. Tiene que ser el "
+            "CONTENIDO del .json (empieza con '{' y tiene \"private_key\"), "
+            "NO el email de la service account. Detalle: " + str(e)
+        )
+    return raw
+
+
 def load_config() -> Config:
     """
     Lee y valida las variables de entorno. Si falta algo, corta con un
@@ -80,7 +118,7 @@ def load_config() -> Config:
     """
     faltantes = [
         v
-        for v in ("TELEGRAM_TOKEN", "SHEET_ID", "GOOGLE_CREDENTIALS")
+        for v in ("TELEGRAM_TOKEN", "SHEET_ID")
         if not os.environ.get(v)
     ]
     if faltantes:
@@ -90,14 +128,7 @@ def load_config() -> Config:
             + ".\nRevisá el README (sección Setup) o el archivo .env.example."
         )
 
-    raw_creds = os.environ["GOOGLE_CREDENTIALS"]
-    try:
-        json.loads(raw_creds)
-    except json.JSONDecodeError as e:
-        raise SystemExit(
-            "GOOGLE_CREDENTIALS no es un JSON válido. Pegá el contenido "
-            f"completo del archivo de la service account. Detalle: {e}"
-        )
+    raw_creds = _load_credentials_json()
 
     raw_uid = os.environ.get("ALLOWED_USER_ID", "0").strip() or "0"
     try:
@@ -234,6 +265,17 @@ def day_total(ws, fecha: str):
     )
 
 
+def delete_last_expense(ws):
+    """Borra la última fila cargada. Devuelve la fila borrada o None si no hay nada."""
+    rows = ws.get_all_values()
+    last_row_idx = len(rows)
+    if last_row_idx <= 1:  # solo header (o vacío)
+        return None
+    fila = rows[-1]
+    ws.delete_rows(last_row_idx)
+    return fila
+
+
 def month_total(ws, mes_anio: str):
     """Suma los montos del mes dado (mm/aaaa)."""
     rows = ws.get_all_values()[1:]
@@ -274,7 +316,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  combi 10000\n"
         "  snacks 3000\n\n"
         "Podés mandar varios juntos, uno por línea o separados por coma.\n"
-        "Comandos: /hoy (total del día) · /mes (total del mes)."
+        "Comandos: /hoy (total del día) · /mes (total del mes) · "
+        "/borraranterior (borra el último gasto cargado)."
     )
 
 
@@ -313,6 +356,30 @@ async def total_mes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         f"🗓️ Total del mes ({mes_anio}): {format_money(total)}"
+    )
+
+
+async def borrar_anterior(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    config: Config = context.bot_data["config"]
+    if not _autorizado(config, update):
+        return
+    try:
+        ws = await asyncio.to_thread(get_worksheet, config)
+        fila = await asyncio.to_thread(delete_last_expense, ws)
+    except Exception:
+        logger.exception("Error borrando en la planilla")
+        await update.message.reply_text(
+            "⚠️ No pude borrar en la planilla. Probá de nuevo en un ratito."
+        )
+        return
+
+    if fila is None:
+        await update.message.reply_text("No hay nada para borrar. 🤷")
+        return
+
+    _, _, desc, monto = fila
+    await update.message.reply_text(
+        f"🗑️ Borrado: {desc} {format_money(parse_amount(monto) or 0)}"
     )
 
 
@@ -358,12 +425,13 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("hoy", total_hoy))
     app.add_handler(CommandHandler("mes", total_mes))
+    app.add_handler(CommandHandler("borraranterior", borrar_anterior))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
 
     logger.info("Bot corriendo...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
