@@ -4,16 +4,20 @@ de PythonAnywhere (no tiene "always-on task", pero sí web apps gratis).
 
 A diferencia de main.py (que hace polling con python-telegram-bot),
 acá Telegram nos manda cada mensaje por POST a /webhook/<WEBHOOK_SECRET>.
-No usamos el Application async de python-telegram-bot: hablamos directo
-con la Bot API por HTTP, porque WSGI (como corre PythonAnywhere) no
-mantiene un event loop vivo entre requests.
+No usamos el Application async de python-telegram-bot porque WSGI (como
+corre PythonAnywhere) no mantiene un event loop vivo entre requests.
+
+Todo el tráfico va en una sola dirección: Telegram nos habla y nosotros
+contestamos en el cuerpo de esa misma respuesta (ver _responder). El bot
+nunca abre una conexión hacia afuera, que es lo que el proxy del plan
+free bloquea.
 
 Deploy (ver README, sección "Versión gratis"):
   1. Subís este proyecto a PythonAnywhere, armás una Web app (Flask)
      apuntando a este archivo.
   2. Configurás las variables de entorno (mismas que la versión Railway,
      más WEBHOOK_SECRET).
-  3. Corrés una vez scripts/set_webhook.py para avisarle a Telegram la URL.
+  3. Corrés una vez set_webhook.py para avisarle a Telegram la URL.
 """
 
 import os
@@ -37,8 +41,7 @@ _creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE", "").strip()
 if _creds_file and not os.path.isabs(_creds_file):
     os.environ["GOOGLE_CREDENTIALS_FILE"] = str(_BASE_DIR / _creds_file)
 
-import requests
-from flask import Flask, abort, request
+from flask import Flask, abort, jsonify, request
 
 from datetime import datetime
 
@@ -58,7 +61,6 @@ from main import (
 
 app = Flask(__name__)
 _config = None
-_TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
 
 def _get_config():
@@ -68,17 +70,19 @@ def _get_config():
     return _config
 
 
-def _send_message(token: str, chat_id: int, text: str) -> None:
+def _responder(chat_id: int, text: str):
     """
-    Manda la respuesta al usuario. Si falla (por ejemplo, el proxy de
-    PythonAnywhere no deja salir), lo logueamos pero NO explotamos: ver
-    el comentario en webhook() sobre por qué siempre devolvemos 200.
+    Contesta al usuario devolviendo la acción en el cuerpo de la respuesta,
+    en vez de hacer un POST a api.telegram.org. Telegram acepta que el
+    webhook conteste así ("hacé este método con estos parámetros"), y para
+    nosotros es la diferencia entre andar y no andar: el proxy del plan free
+    de PythonAnywhere no deja salir hacia api.telegram.org (503), pero esto
+    viaja por la conexión que Telegram ya abrió hacia nosotros.
+
+    Contra: solo se puede pedir UNA acción por update — nos alcanza, porque
+    respondemos un único mensaje por gasto.
     """
-    url = _TELEGRAM_API.format(token=token, method="sendMessage")
-    try:
-        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
-    except Exception:
-        app.logger.exception("No pude responderle al usuario por Telegram")
+    return jsonify({"method": "sendMessage", "chat_id": chat_id, "text": text})
 
 
 def _autorizado(config, user_id) -> bool:
@@ -170,7 +174,7 @@ def webhook(secret):
             respuesta = _handle_gasto(ws, texto)
 
         if respuesta:
-            _send_message(config.telegram_token, chat_id, respuesta)
+            return _responder(chat_id, respuesta)
     except Exception:
         app.logger.exception("Error procesando el update de Telegram")
     return "ok"
