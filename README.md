@@ -69,6 +69,55 @@ Son 4 pasos. Después de esto te olvidás para siempre.
 
 Listo. El bot queda corriendo 24/7. Empezá a mandarle gastos. 🎉
 
+### 4-bis. Alternativa gratis: PythonAnywhere (rama `gratis`)
+
+Railway es de pago (~$5/mes). Esta rama corre gratis en PythonAnywhere, con
+webhook en vez de polling: en vez de que el bot esté todo el rato
+preguntándole a Telegram si hay mensajes nuevos, Telegram le avisa por HTTP
+solo cuando llega uno.
+
+1. Creá cuenta gratis en [pythonanywhere.com](https://www.pythonanywhere.com).
+2. **Web app**: Dashboard → "Web" → "Add a new web app" → Flask → Python 3.10+.
+   Se crea un WSGI file de ejemplo; reemplazá su contenido por:
+
+   ```python
+   import sys
+   path = "/home/TU_USUARIO/Bot-Gastos"  # carpeta donde subiste el repo
+   if path not in sys.path:
+       sys.path.append(path)
+
+   from webhook_app import app as application
+   ```
+
+3. Subí el código: Dashboard → "Consoles" → Bash, y ahí:
+
+   ```bash
+   git clone https://github.com/ValentinGarciaDelCueto/Gastos-Bot.git
+   cd Gastos-Bot
+   git checkout gratis
+   pip install --user -r requirements.txt
+   ```
+
+4. **Variables de entorno**: en la pestaña "Web", sección "Environment
+   variables" (o subí un `.env` al lado de `webhook_app.py` — se carga solo).
+   Mismas variables que Railway (`TELEGRAM_TOKEN`, `SHEET_ID`,
+   `ALLOWED_USER_ID`, `GOOGLE_CREDENTIALS` o `GOOGLE_CREDENTIALS_FILE`), más:
+
+   | Variable         | Valor                                                |
+   |------------------|-------------------------------------------------------|
+   | `WEBHOOK_SECRET` | Texto random largo (`python -c "import secrets; print(secrets.token_urlsafe(24))"`) |
+
+5. Reload de la web app (botón verde "Reload" en la pestaña "Web").
+6. Desde la consola Bash, avisale a Telegram dónde está tu bot (una sola vez):
+
+   ```bash
+   python set_webhook.py https://TU_USUARIO.pythonanywhere.com
+   ```
+
+Listo, corre gratis. Ojo: el plan free de PythonAnywhere pausa la web app si
+no la "refrescás" (accedés a pythonanywhere.com) por 3 meses seguidos —
+alcanza con entrar de vez en cuando.
+
 ---
 
 ## Comandos
@@ -76,6 +125,7 @@ Listo. El bot queda corriendo 24/7. Empezá a mandarle gastos. 🎉
 - Mandar gastos: `combi 10000` (o varios juntos)
 - `/hoy` — total gastado hoy
 - `/mes` — total gastado en el mes
+- `/borraranterior` — borra el último gasto cargado
 - `/start` — instrucciones
 
 ## Formatos de monto que entiende
