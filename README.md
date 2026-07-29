@@ -114,9 +114,10 @@ solo cuando llega uno.
    python set_webhook.py https://TU_USUARIO.pythonanywhere.com
    ```
 
-Listo, corre gratis. Ojo: el plan free de PythonAnywhere pausa la web app si
-no la "refrescás" (accedés a pythonanywhere.com) por 3 meses seguidos —
-alcanza con entrar de vez en cuando.
+Listo, corre gratis. Ojo: el plan free de PythonAnywhere apaga la web app si
+no entrás a loguearte por 1 mes — te avisa por mail una semana antes. Cuando
+entres, apretá el botón "Run until 1 month from today" (pestaña Web) para
+extenderla otro mes.
 
 ---
 
