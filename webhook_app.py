@@ -69,8 +69,16 @@ def _get_config():
 
 
 def _send_message(token: str, chat_id: int, text: str) -> None:
+    """
+    Manda la respuesta al usuario. Si falla (por ejemplo, el proxy de
+    PythonAnywhere no deja salir), lo logueamos pero NO explotamos: ver
+    el comentario en webhook() sobre por qué siempre devolvemos 200.
+    """
     url = _TELEGRAM_API.format(token=token, method="sendMessage")
-    requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
+    try:
+        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
+    except Exception:
+        app.logger.exception("No pude responderle al usuario por Telegram")
 
 
 def _autorizado(config, user_id) -> bool:
@@ -147,18 +155,24 @@ def webhook(secret):
     if not texto or chat_id is None:
         return "ok"
 
-    config = _get_config()
-    if not _autorizado(config, sender.get("id")):
-        return "ok"
+    # De acá en adelante devolvemos 200 pase lo que pase: si contestamos con
+    # un error, Telegram reintenta el MISMO update una y otra vez, y como el
+    # gasto ya se guardó terminás con la misma fila repetida en la planilla.
+    try:
+        config = _get_config()
+        if not _autorizado(config, sender.get("id")):
+            return "ok"
 
-    ws = get_worksheet(config)
-    if texto.startswith("/"):
-        respuesta = _handle_command(ws, texto.split()[0])
-    else:
-        respuesta = _handle_gasto(ws, texto)
+        ws = get_worksheet(config)
+        if texto.startswith("/"):
+            respuesta = _handle_command(ws, texto.split()[0])
+        else:
+            respuesta = _handle_gasto(ws, texto)
 
-    if respuesta:
-        _send_message(config.telegram_token, chat_id, respuesta)
+        if respuesta:
+            _send_message(config.telegram_token, chat_id, respuesta)
+    except Exception:
+        app.logger.exception("Error procesando el update de Telegram")
     return "ok"
 
 
