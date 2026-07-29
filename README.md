@@ -77,47 +77,88 @@ preguntándole a Telegram si hay mensajes nuevos, Telegram le avisa por HTTP
 solo cuando llega uno.
 
 1. Creá cuenta gratis en [pythonanywhere.com](https://www.pythonanywhere.com).
-2. **Web app**: Dashboard → "Web" → "Add a new web app" → Flask → Python 3.10+.
-   Se crea un WSGI file de ejemplo; reemplazá su contenido por:
+
+2. **Traé el código**: Dashboard → "Consoles" → "Bash", y ahí:
+
+   ```bash
+   git clone https://github.com/ValentinGarciaDelCueto/gastos_bot.git
+   cd gastos_bot
+   git checkout gratis
+   ```
+
+3. **Web app**: Dashboard → "Web" → "Add a new web app" → Flask → Python 3.10.
+   Anotá qué versión de Python elegiste, la vas a necesitar en el paso 4.
+
+   Se crea un WSGI file de ejemplo. Abrilo (link "WSGI configuration file",
+   en la misma pestaña "Web") y reemplazá TODO su contenido por:
 
    ```python
    import sys
-   path = "/home/TU_USUARIO/Bot-Gastos"  # carpeta donde subiste el repo
+   path = "/home/TU_USUARIO/gastos_bot"
    if path not in sys.path:
        sys.path.append(path)
 
    from webhook_app import app as application
    ```
 
-3. Subí el código: Dashboard → "Consoles" → Bash, y ahí:
+   > Ojo con las mayúsculas de `TU_USUARIO`: Linux distingue, y si no coincide
+   > exacto con tu usuario vas a ver `ModuleNotFoundError: No module named
+   > 'webhook_app'` en el error log.
+
+4. **Dependencias**, con la misma versión de Python que elegiste arriba:
 
    ```bash
-   git clone https://github.com/ValentinGarciaDelCueto/Gastos-Bot.git
-   cd Gastos-Bot
-   git checkout gratis
-   pip install --user -r requirements.txt
+   pip3.10 install --user -r ~/gastos_bot/requirements.txt
    ```
 
-4. **Variables de entorno**: en la pestaña "Web", sección "Environment
-   variables" (o subí un `.env` al lado de `webhook_app.py` — se carga solo).
-   Mismas variables que Railway (`TELEGRAM_TOKEN`, `SHEET_ID`,
-   `ALLOWED_USER_ID`, `GOOGLE_CREDENTIALS` o `GOOGLE_CREDENTIALS_FILE`), más:
+   > Tiene que ser `pip3.10` (o la versión que hayas elegido), no `pip` a
+   > secas: si instalás para otra versión, la web app no las encuentra y el
+   > error log dice `No module named 'gspread'`.
+
+5. **Credenciales**, las dos en la carpeta `~/gastos_bot`:
+
+   - Subí tu `creds.json` desde la pestaña "Files" → "Upload a file".
+   - Creá el `.env` desde la consola (`nano ~/gastos_bot/.env`) con las mismas
+     variables que Railway (`TELEGRAM_TOKEN`, `SHEET_ID`, `ALLOWED_USER_ID`,
+     `GOOGLE_CREDENTIALS_FILE=creds.json`), más:
 
    | Variable         | Valor                                                |
    |------------------|-------------------------------------------------------|
-   | `WEBHOOK_SECRET` | Texto random largo (`python -c "import secrets; print(secrets.token_urlsafe(24))"`) |
+   | `WEBHOOK_SECRET` | Texto random largo (`python3 -c "import secrets; print(secrets.token_urlsafe(24))"`) |
 
-5. Reload de la web app (botón verde "Reload" en la pestaña "Web").
-6. Desde la consola Bash, avisale a Telegram dónde está tu bot (una sola vez):
+6. Reload de la web app (botón verde "Reload" en la pestaña "Web").
+
+7. Desde la consola Bash, avisale a Telegram dónde está tu bot (una sola vez):
 
    ```bash
-   python set_webhook.py https://TU_USUARIO.pythonanywhere.com
+   python3 set_webhook.py https://TU_USUARIO.pythonanywhere.com
    ```
 
 Listo, corre gratis. Ojo: el plan free de PythonAnywhere apaga la web app si
 no entrás a loguearte por 1 mes — te avisa por mail una semana antes. Cuando
 entres, apretá el botón "Run until 1 month from today" (pestaña Web) para
 extenderla otro mes.
+
+#### Si algo no anda
+
+El error log de la pestaña "Web" te dice qué pasó. Para ver cómo lo está
+viendo Telegram (útil cuando el bot no contesta nada):
+
+```bash
+curl "https://api.telegram.org/bot<TU_TOKEN>/getWebhookInfo"
+```
+
+- `"pending_update_count"` alto y creciendo → el bot está devolviendo error y
+  Telegram reintenta. Mirá `"last_error_message"`.
+- `403 FORBIDDEN` → el `WEBHOOK_SECRET` del `.env` no coincide con el de la
+  URL registrada, o la web app no está leyendo el `.env`.
+- `500` → revisá el traceback completo en el error log.
+
+Una advertencia sobre el plan free: **no deja salir hacia `api.telegram.org`**
+(el proxy contesta `503 Service Unavailable`). Por eso `webhook_app.py`
+contesta dentro de la respuesta del webhook en vez de llamar a la Bot API. Si
+agregás alguna función que necesite hablar con Telegram por su cuenta (mandar
+un recordatorio, por ejemplo), no va a andar en el plan free.
 
 ---
 

@@ -14,3 +14,7 @@ env/
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Copia local del repo clonada adentro del proyecto: pytest la encuentra y
+# choca con los tests de tests/ ("import file mismatch").
+gastos_bot/
