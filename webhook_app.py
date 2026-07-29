@@ -17,6 +17,25 @@ Deploy (ver README, sección "Versión gratis"):
 """
 
 import os
+from pathlib import Path
+
+# El server WSGI arranca desde /var/www (no desde esta carpeta), así que el
+# .env y el creds.json hay que ubicarlos a mano: si no, load_dotenv() no
+# encuentra nada y el bot arranca sin token ni WEBHOOK_SECRET.
+_BASE_DIR = Path(__file__).resolve().parent
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(_BASE_DIR / ".env")
+except ImportError:
+    pass
+
+# Mismo motivo: GOOGLE_CREDENTIALS_FILE=creds.json es relativo al proyecto,
+# no al directorio desde el que arrancó el server.
+_creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE", "").strip()
+if _creds_file and not os.path.isabs(_creds_file):
+    os.environ["GOOGLE_CREDENTIALS_FILE"] = str(_BASE_DIR / _creds_file)
 
 import requests
 from flask import Flask, abort, request
