@@ -161,6 +161,114 @@ def test_record_expenses_agrega_y_totaliza():
     assert ws.rows[1] == ["22/07/2026", "14:30", "combi", "10000"]
 
 
+# ---------------------------------------------------------------------------
+# /credito: parseo, suma de meses y carga de cuotas
+# ---------------------------------------------------------------------------
+def test_parse_credito_ejemplo_del_readme():
+    assert main.parse_credito("/credito 32400 coderhouse curso 6 meses") == (
+        "coderhouse curso",
+        32400,
+        6,
+    )
+
+
+def test_parse_credito_sin_el_comando_adelante():
+    assert main.parse_credito("32400 coderhouse 6 meses") == (
+        "coderhouse",
+        32400,
+        6,
+    )
+
+
+def test_parse_credito_acepta_cuotas_y_singular():
+    assert main.parse_credito("/credito 5000 tele 3 cuotas")[2] == 3
+    assert main.parse_credito("/credito 5000 tele 1 cuota")[2] == 1
+    assert main.parse_credito("/credito 5000 tele 1 mes")[2] == 1
+
+
+def test_parse_credito_orden_invertido():
+    # Igual que un gasto normal: el monto puede ir después de la descripción.
+    assert main.parse_credito("/credito zapatillas 15000 12 meses") == (
+        "zapatillas",
+        15000,
+        12,
+    )
+
+
+def test_parse_credito_monto_con_formato_argentino():
+    assert main.parse_credito("/credito 32.400 curso 6 meses")[1] == 32400
+    assert main.parse_credito("/credito 10k curso 6 meses")[1] == 10000
+
+
+def test_parse_credito_sin_cuotas_devuelve_none():
+    assert main.parse_credito("/credito 32400 coderhouse") is None
+
+
+def test_parse_credito_sin_monto_devuelve_none():
+    assert main.parse_credito("/credito coderhouse 6 meses") is None
+
+
+def test_parse_credito_rechaza_cantidades_absurdas():
+    assert main.parse_credito("/credito 100 algo 0 meses") is None
+    assert main.parse_credito("/credito 100 algo 6000 meses") is None
+
+
+def test_sumar_meses_caso_normal():
+    assert main.sumar_meses(datetime(2026, 7, 29), 1) == datetime(2026, 8, 29)
+
+
+def test_sumar_meses_cruza_de_anio():
+    assert main.sumar_meses(datetime(2026, 11, 15), 3) == datetime(2027, 2, 15)
+
+
+def test_sumar_meses_dia_que_no_existe_cae_al_ultimo():
+    # 31/01 + 1 mes no es 31/02: cae al último día de febrero.
+    assert main.sumar_meses(datetime(2026, 1, 31), 1) == datetime(2026, 2, 28)
+    # 2028 es bisiesto.
+    assert main.sumar_meses(datetime(2028, 1, 31), 1) == datetime(2028, 2, 29)
+    assert main.sumar_meses(datetime(2026, 3, 31), 1) == datetime(2026, 4, 30)
+
+
+def test_record_credito_carga_una_fila_por_mes():
+    ws = FakeWorksheet([main.HEADERS])
+    now = datetime(2026, 7, 29, 14, 30)
+
+    filas, total_dia = main.record_credito(ws, "coderhouse curso", 32400, 6, now)
+
+    assert len(filas) == 6
+    assert len(ws.rows) == 7  # encabezado + 6 cuotas
+    # La primera cuota es hoy y es la única que suma al total del día.
+    assert ws.rows[1] == ["29/07/2026", "14:30", "coderhouse curso (1/6)", "32400"]
+    assert total_dia == 32400
+    # El resto queda agendado mes a mes.
+    assert ws.rows[2][0] == "29/08/2026"
+    assert ws.rows[6] == ["29/12/2026", "14:30", "coderhouse curso (6/6)", "32400"]
+
+
+def test_record_credito_no_ensucia_el_mes_actual():
+    ws = FakeWorksheet([main.HEADERS])
+    now = datetime(2026, 7, 29, 14, 30)
+
+    main.record_credito(ws, "curso", 10000, 3, now)
+
+    assert main.month_total(ws, "07/2026") == 10000  # solo la cuota de julio
+    assert main.month_total(ws, "08/2026") == 10000
+    assert main.month_total(ws, "09/2026") == 10000
+
+
+def test_build_credito_confirmation():
+    ws = FakeWorksheet([main.HEADERS])
+    now = datetime(2026, 7, 29, 14, 30)
+    filas, total_dia = main.record_credito(ws, "coderhouse", 32400, 6, now)
+
+    texto = main.build_credito_confirmation("coderhouse", 32400, filas, total_dia)
+
+    assert "coderhouse" in texto
+    assert "6 cuotas de $32.400" in texto
+    assert "$194.400" in texto  # total
+    assert "29/07/2026" in texto and "29/12/2026" in texto
+
+
 def test_day_total_filtra_por_fecha():
     ws = FakeWorksheet(
         [

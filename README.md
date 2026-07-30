@@ -167,8 +167,23 @@ un recordatorio, por ejemplo), no va a andar en el plan free.
 - Mandar gastos: `combi 10000` (o varios juntos)
 - `/hoy` — total gastado hoy
 - `/mes` — total gastado en el mes
+- `/credito` — compra en cuotas (ver abajo)
 - `/borraranterior` — borra el último gasto cargado
 - `/start` — instrucciones
+
+### Compras en cuotas
+
+```
+/credito 32400 coderhouse curso 6 meses
+```
+
+El monto es el de **cada cuota**, no el total. Eso carga 6 filas de $32.400,
+una por mes, con la descripción numerada (`coderhouse curso (1/6)`,
+`(2/6)`, …). La primera cuota es de hoy y las otras quedan con fecha futura,
+así que aparecen solas en el `/mes` que les toca.
+
+Acepta `meses`, `mes`, `cuotas` o `cuota`, y el monto puede ir antes o después
+de la descripción — igual que un gasto normal.
 
 ## Formatos de monto que entiende
 

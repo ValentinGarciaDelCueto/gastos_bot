@@ -19,6 +19,7 @@ import re
 import json
 import asyncio
 import logging
+import calendar
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -243,6 +244,59 @@ def format_money(n) -> str:
     return "$" + f"{n:,.0f}".replace(",", ".")
 
 
+# Cuántas cuotas admitimos como máximo. Es un tope de sentido común: evita
+# que un tipeo ("6000 meses") llene la planilla de filas.
+MAX_CUOTAS = 120
+
+_CUOTAS_RE = re.compile(
+    r"\b(\d{1,4})\s*(?:meses|mes|cuotas|cuota)\b", re.IGNORECASE
+)
+
+
+def parse_credito(text: str):
+    """
+    De '/credito 32400 coderhouse curso 6 meses' saca
+    ('coderhouse curso', 32400, 6): descripción, monto de CADA cuota y
+    cantidad de cuotas.
+
+    La cantidad de cuotas es el número pegado a "meses"/"cuotas"; lo saco
+    del texto y el resto lo parsea parse_line(), así que el monto y la
+    descripción pueden venir en cualquier orden, igual que en un gasto
+    normal. Devuelve None si falta algo.
+    """
+    text = text.strip()
+    if text.startswith("/"):
+        _, _, text = text.partition(" ")  # saco el "/credito"
+
+    m = _CUOTAS_RE.search(text)
+    if not m:
+        return None
+
+    cuotas = int(m.group(1))
+    if not 1 <= cuotas <= MAX_CUOTAS:
+        return None
+
+    resto = text[: m.start()] + " " + text[m.end():]
+    parsed = parse_line(resto)
+    if not parsed:
+        return None
+
+    descripcion, monto = parsed
+    return descripcion, monto, cuotas
+
+
+def sumar_meses(fecha: datetime, meses: int) -> datetime:
+    """
+    Suma meses cuidando los días que no existen: 31/01 + 1 mes cae en el
+    28/02 (o 29 si es bisiesto), no explota ni se pasa a marzo.
+    """
+    indice = fecha.month - 1 + meses
+    anio = fecha.year + indice // 12
+    mes = indice % 12 + 1
+    dia = min(fecha.day, calendar.monthrange(anio, mes)[1])
+    return fecha.replace(year=anio, month=mes, day=dia)
+
+
 # ---------------------------------------------------------------------------
 # Lógica de negocio sobre la planilla (sync, testeable con una hoja falsa)
 # ---------------------------------------------------------------------------
@@ -262,6 +316,43 @@ def day_total(ws, fecha: str):
         parse_amount(r[3]) or 0
         for r in rows
         if len(r) >= 4 and r[0] == fecha
+    )
+
+
+def record_credito(ws, descripcion: str, monto, cuotas: int, now: datetime):
+    """
+    Carga las cuotas de una compra en cuotas: una fila por mes, arrancando
+    hoy. Las cuotas futuras quedan con fecha futura, así que no ensucian el
+    /hoy ni el /mes actuales — aparecen solas cuando llega su mes.
+
+    Devuelve (filas_escritas, total_del_dia).
+    """
+    hora = now.strftime("%H:%M")
+    filas = []
+    for i in range(cuotas):
+        fecha = sumar_meses(now, i)
+        filas.append(
+            [
+                fecha.strftime("%d/%m/%Y"),
+                hora,
+                f"{descripcion} ({i + 1}/{cuotas})",
+                monto,
+            ]
+        )
+
+    ws.append_rows(filas, value_input_option="USER_ENTERED")
+    return filas, day_total(ws, now.strftime("%d/%m/%Y"))
+
+
+def build_credito_confirmation(descripcion, monto, filas, total_dia) -> str:
+    """Texto que ve el usuario después de cargar un crédito."""
+    cuotas = len(filas)
+    return (
+        f"💳 {descripcion}\n"
+        f"{cuotas} cuotas de {format_money(monto)}"
+        f" · Total {format_money(monto * cuotas)}\n"
+        f"Primera: {filas[0][0]} · Última: {filas[-1][0]}\n"
+        f"📊 Total hoy: {format_money(total_dia)}"
     )
 
 
@@ -316,6 +407,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  combi 10000\n"
         "  snacks 3000\n\n"
         "Podés mandar varios juntos, uno por línea o separados por coma.\n"
+        "Si comprás en cuotas:\n"
+        "  /credito 32400 coderhouse curso 6 meses\n\n"
         "Comandos: /hoy (total del día) · /mes (total del mes) · "
         "/borraranterior (borra el último gasto cargado)."
     )
@@ -356,6 +449,43 @@ async def total_mes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         f"🗓️ Total del mes ({mes_anio}): {format_money(total)}"
+    )
+
+
+CREDITO_AYUDA = (
+    "Para cargar algo en cuotas mandame:\n"
+    "  /credito 32400 coderhouse curso 6 meses\n\n"
+    "El monto es el de CADA cuota. La primera se carga hoy y el resto "
+    "quedan agendadas mes a mes."
+)
+
+
+async def credito(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    config: Config = context.bot_data["config"]
+    if not _autorizado(config, update):
+        return
+
+    parsed = parse_credito(update.message.text or "")
+    if not parsed:
+        await update.message.reply_text(CREDITO_AYUDA)
+        return
+
+    descripcion, monto, cuotas = parsed
+    try:
+        ws = await asyncio.to_thread(get_worksheet, config)
+        now = datetime.now(TZ)
+        filas, total_dia = await asyncio.to_thread(
+            record_credito, ws, descripcion, monto, cuotas, now
+        )
+    except Exception:
+        logger.exception("Error guardando las cuotas en la planilla")
+        await update.message.reply_text(
+            "⚠️ No pude guardar las cuotas. Probá de nuevo en un ratito."
+        )
+        return
+
+    await update.message.reply_text(
+        build_credito_confirmation(descripcion, monto, filas, total_dia)
     )
 
 
@@ -426,6 +556,7 @@ def main():
     app.add_handler(CommandHandler("hoy", total_hoy))
     app.add_handler(CommandHandler("mes", total_mes))
     app.add_handler(CommandHandler("borraranterior", borrar_anterior))
+    app.add_handler(CommandHandler("credito", credito))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )

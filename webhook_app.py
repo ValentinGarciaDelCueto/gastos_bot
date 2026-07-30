@@ -46,8 +46,10 @@ from flask import Flask, abort, jsonify, request
 from datetime import datetime
 
 from main import (
+    CREDITO_AYUDA,
     TZ,
     build_confirmation,
+    build_credito_confirmation,
     day_total,
     delete_last_expense,
     format_money,
@@ -55,7 +57,9 @@ from main import (
     load_config,
     month_total,
     parse_amount,
+    parse_credito,
     parse_message,
+    record_credito,
     record_expenses,
 )
 
@@ -102,22 +106,30 @@ def _responder_total(ws, fecha_o_mes, es_mes: bool) -> str:
 
 
 def _handle_command(ws, texto: str) -> str:
-    if texto == "/start":
+    """
+    `texto` es el mensaje completo, no solo el comando: /credito necesita
+    los argumentos que vienen atrás.
+    """
+    comando = texto.split()[0].lower()
+
+    if comando == "/start":
         return (
             "¡Hola! Soy tu bot de gastos. 💸\n\n"
             "Mandame tus gastos así:\n"
             "  combi 10000\n"
             "  snacks 3000\n\n"
             "Podés mandar varios juntos, uno por línea o separados por coma.\n"
+            "Si comprás en cuotas:\n"
+            "  /credito 32400 coderhouse curso 6 meses\n\n"
             "Comandos: /hoy (total del día) · /mes (total del mes) · "
             "/borraranterior (borra el último gasto cargado)."
         )
     now = datetime.now(TZ)
-    if texto == "/hoy":
+    if comando == "/hoy":
         return _responder_total(ws, now.strftime("%d/%m/%Y"), es_mes=False)
-    if texto == "/mes":
+    if comando == "/mes":
         return _responder_total(ws, now.strftime("%m/%Y"), es_mes=True)
-    if texto == "/borraranterior":
+    if comando == "/borraranterior":
         try:
             fila = delete_last_expense(ws)
         except Exception:
@@ -127,6 +139,17 @@ def _handle_command(ws, texto: str) -> str:
             return "No hay nada para borrar. 🤷"
         _, _, desc, monto = fila
         return f"🗑️ Borrado: {desc} {format_money(parse_amount(monto) or 0)}"
+    if comando == "/credito":
+        parsed = parse_credito(texto)
+        if not parsed:
+            return CREDITO_AYUDA
+        descripcion, monto, cuotas = parsed
+        try:
+            filas, total_dia = record_credito(ws, descripcion, monto, cuotas, now)
+        except Exception:
+            app.logger.exception("Error guardando las cuotas en la planilla")
+            return "⚠️ No pude guardar las cuotas. Probá de nuevo en un ratito."
+        return build_credito_confirmation(descripcion, monto, filas, total_dia)
     return None
 
 
@@ -169,7 +192,7 @@ def webhook(secret):
 
         ws = get_worksheet(config)
         if texto.startswith("/"):
-            respuesta = _handle_command(ws, texto.split()[0])
+            respuesta = _handle_command(ws, texto)
         else:
             respuesta = _handle_gasto(ws, texto)
 
