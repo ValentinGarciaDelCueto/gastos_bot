@@ -29,8 +29,14 @@ class FakeWorksheet:
         for r in rows:
             self.rows.append([str(c) for c in r])
 
-    def delete_rows(self, index):
-        del self.rows[index - 1]
+    def delete_rows(self, start_index, end_index=None):
+        end = start_index if end_index is None else end_index
+        del self.rows[start_index - 1 : end]
+
+    def update_cell(self, row, col, value):
+        fila = self.rows[row - 1]
+        fila.extend([""] * (col - len(fila)))
+        fila[col - 1] = str(value)
 
 
 # ---------------------------------------------------------------------------
@@ -233,16 +239,17 @@ def test_record_credito_carga_una_fila_por_mes():
     ws = FakeWorksheet([main.HEADERS])
     now = datetime(2026, 7, 29, 14, 30)
 
-    filas, total_dia = main.record_credito(ws, "coderhouse curso", 32400, 6, now)
+    filas, total_dia, cid = main.record_credito(ws, "coderhouse curso", 32400, 6, now)
 
     assert len(filas) == 6
     assert len(ws.rows) == 7  # encabezado + 6 cuotas
+    assert cid == 1
     # La primera cuota es hoy y es la única que suma al total del día.
-    assert ws.rows[1] == ["29/07/2026", "14:30", "coderhouse curso (1/6)", "32400"]
+    assert ws.rows[1] == ["29/07/2026", "14:30", "coderhouse curso (1/6)", "32400", "1"]
     assert total_dia == 32400
     # El resto queda agendado mes a mes.
     assert ws.rows[2][0] == "29/08/2026"
-    assert ws.rows[6] == ["29/12/2026", "14:30", "coderhouse curso (6/6)", "32400"]
+    assert ws.rows[6] == ["29/12/2026", "14:30", "coderhouse curso (6/6)", "32400", "1"]
 
 
 def test_record_credito_no_ensucia_el_mes_actual():
@@ -259,14 +266,166 @@ def test_record_credito_no_ensucia_el_mes_actual():
 def test_build_credito_confirmation():
     ws = FakeWorksheet([main.HEADERS])
     now = datetime(2026, 7, 29, 14, 30)
-    filas, total_dia = main.record_credito(ws, "coderhouse", 32400, 6, now)
+    filas, total_dia, cid = main.record_credito(ws, "coderhouse", 32400, 6, now)
 
-    texto = main.build_credito_confirmation("coderhouse", 32400, filas, total_dia)
+    texto = main.build_credito_confirmation("coderhouse", 32400, filas, total_dia, cid)
 
     assert "coderhouse" in texto
     assert "6 cuotas de $32.400" in texto
     assert "$194.400" in texto  # total
     assert "29/07/2026" in texto and "29/12/2026" in texto
+    assert "/borrarcredito 1" in texto  # cómo darlo de baja
+
+
+# ---------------------------------------------------------------------------
+# Ids de crédito: /creditos y /borrarcredito
+# ---------------------------------------------------------------------------
+def test_los_creditos_reciben_ids_correlativos():
+    ws = FakeWorksheet([main.HEADERS])
+    now = datetime(2026, 7, 29, 14, 30)
+
+    _, _, primero = main.record_credito(ws, "coderhouse", 32400, 6, now)
+    _, _, segundo = main.record_credito(ws, "netflix", 50000, 3, now)
+
+    assert (primero, segundo) == (1, 2)
+
+
+def test_borrar_el_ultimo_credito_libera_su_id():
+    # Comportamiento asumido de "el mayor + 1": el número del último crédito
+    # vuelve a quedar disponible cuando lo borrás.
+    ws = FakeWorksheet([main.HEADERS])
+    now = datetime(2026, 7, 29, 14, 30)
+
+    main.record_credito(ws, "coderhouse", 32400, 6, now)
+    _, _, segundo = main.record_credito(ws, "netflix", 50000, 3, now)
+    main.delete_credito(ws, segundo)
+    _, _, tercero = main.record_credito(ws, "gimnasio", 20000, 12, now)
+
+    assert tercero == 2
+
+
+def test_borrar_uno_del_medio_no_libera_su_id():
+    ws = FakeWorksheet([main.HEADERS])
+    now = datetime(2026, 7, 29, 14, 30)
+
+    _, _, primero = main.record_credito(ws, "coderhouse", 32400, 6, now)
+    main.record_credito(ws, "netflix", 50000, 3, now)
+    main.delete_credito(ws, primero)
+    _, _, tercero = main.record_credito(ws, "gimnasio", 20000, 12, now)
+
+    assert tercero == 3
+
+
+def test_los_gastos_sueltos_no_tienen_id():
+    ws = FakeWorksheet([main.HEADERS])
+    now = datetime(2026, 7, 29, 14, 30)
+    main.record_expenses(ws, [("combi", 10000)], now)
+
+    assert main.credito_id_de_fila(ws.rows[1]) is None
+    # Y el primer crédito arranca igual en 1.
+    assert main.next_credito_id(ws) == 1
+
+
+def test_delete_credito_borra_solo_ese_credito():
+    ws = FakeWorksheet([main.HEADERS])
+    now = datetime(2026, 7, 29, 14, 30)
+    main.record_credito(ws, "coderhouse", 32400, 6, now)
+    main.record_credito(ws, "netflix", 50000, 3, now)
+    main.record_expenses(ws, [("combi", 10000)], now)
+
+    borradas = main.delete_credito(ws, 1)
+
+    assert len(borradas) == 6
+    assert all("coderhouse" in b[2] for b in borradas)
+    # Quedan las 3 cuotas de netflix, el gasto suelto y el encabezado.
+    assert len(ws.rows) == 5
+    assert {main.credito_id_de_fila(r) for r in ws.rows[1:]} == {2, None}
+
+
+def test_delete_credito_con_filas_no_contiguas():
+    # Entre cuota y cuota puede haber gastos sueltos cargados después.
+    ws = FakeWorksheet(
+        [
+            main.HEADERS,
+            ["29/07/2026", "10:00", "curso (1/2)", "1000", "1"],
+            ["29/07/2026", "11:00", "combi", "500", ""],
+            ["29/08/2026", "10:00", "curso (2/2)", "1000", "1"],
+        ]
+    )
+
+    borradas = main.delete_credito(ws, 1)
+
+    assert len(borradas) == 2
+    assert len(ws.rows) == 2
+    assert ws.rows[1][2] == "combi"
+
+
+def test_delete_credito_id_inexistente():
+    ws = FakeWorksheet([main.HEADERS])
+    main.record_credito(ws, "coderhouse", 32400, 6, datetime(2026, 7, 29, 14, 30))
+
+    assert main.delete_credito(ws, 99) == []
+    assert len(ws.rows) == 7  # no tocó nada
+
+
+def test_list_creditos():
+    ws = FakeWorksheet([main.HEADERS])
+    now = datetime(2026, 7, 29, 14, 30)
+    main.record_credito(ws, "coderhouse curso", 32400, 6, now)
+    main.record_credito(ws, "netflix", 50000, 3, now)
+    main.record_expenses(ws, [("combi", 10000)], now)
+
+    lista = main.list_creditos(ws)
+
+    assert lista == [
+        {"id": 1, "descripcion": "coderhouse curso", "cuotas": 6, "monto": 32400},
+        {"id": 2, "descripcion": "netflix", "cuotas": 3, "monto": 50000},
+    ]
+
+
+def test_list_creditos_sin_ninguno():
+    ws = FakeWorksheet([main.HEADERS])
+    assert main.list_creditos(ws) == []
+    assert "No tenés créditos" in main.build_creditos_list([])
+
+
+def test_parse_credito_id():
+    assert main.parse_credito_id("/borrarcredito 2") == 2
+    assert main.parse_credito_id("/borrarcredito 13") == 13
+    assert main.parse_credito_id("/borrarcredito") is None
+    assert main.parse_credito_id("/borrarcredito todos") is None
+
+
+def test_build_borrado_credito():
+    ws = FakeWorksheet([main.HEADERS])
+    main.record_credito(ws, "coderhouse", 32400, 6, datetime(2026, 7, 29, 14, 30))
+    borradas = main.delete_credito(ws, 1)
+
+    texto = main.build_borrado_credito(1, borradas)
+
+    assert "coderhouse" in texto
+    assert "(1/6)" not in texto  # sin el sufijo de cuota
+    assert "6 cuotas" in texto
+    assert "$194.400" in texto
+
+
+def test_build_borrado_credito_inexistente():
+    assert "No encontré" in main.build_borrado_credito(9, [])
+
+
+def test_ensure_headers_agrega_la_columna_credito_a_planillas_viejas():
+    # Planilla creada antes de que existieran los créditos.
+    ws = FakeWorksheet(
+        [
+            ["Fecha", "Hora", "Descripción", "Monto"],
+            ["29/07/2026", "10:00", "combi", "10000"],
+        ]
+    )
+
+    main.ensure_headers(ws)
+
+    assert ws.rows[0] == main.HEADERS
+    assert ws.rows[1] == ["29/07/2026", "10:00", "combi", "10000"]  # intacto
 
 
 def test_day_total_filtra_por_fecha():

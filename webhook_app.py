@@ -46,18 +46,24 @@ from flask import Flask, abort, jsonify, request
 from datetime import datetime
 
 from main import (
+    BORRAR_CREDITO_AYUDA,
     CREDITO_AYUDA,
     TZ,
+    build_borrado_credito,
     build_confirmation,
     build_credito_confirmation,
+    build_creditos_list,
     day_total,
+    delete_credito,
     delete_last_expense,
     format_money,
     get_worksheet,
+    list_creditos,
     load_config,
     month_total,
     parse_amount,
     parse_credito,
+    parse_credito_id,
     parse_message,
     record_credito,
     record_expenses,
@@ -122,7 +128,8 @@ def _handle_command(ws, texto: str) -> str:
             "Si comprás en cuotas:\n"
             "  /credito 32400 coderhouse curso 6 meses\n\n"
             "Comandos: /hoy (total del día) · /mes (total del mes) · "
-            "/borraranterior (borra el último gasto cargado)."
+            "/creditos (los que tenés en cuotas) · /borrarcredito (da de baja "
+            "uno) · /borraranterior (borra el último gasto cargado)."
         )
     now = datetime.now(TZ)
     if comando == "/hoy":
@@ -145,11 +152,31 @@ def _handle_command(ws, texto: str) -> str:
             return CREDITO_AYUDA
         descripcion, monto, cuotas = parsed
         try:
-            filas, total_dia = record_credito(ws, descripcion, monto, cuotas, now)
+            filas, total_dia, credito_id = record_credito(
+                ws, descripcion, monto, cuotas, now
+            )
         except Exception:
             app.logger.exception("Error guardando las cuotas en la planilla")
             return "⚠️ No pude guardar las cuotas. Probá de nuevo en un ratito."
-        return build_credito_confirmation(descripcion, monto, filas, total_dia)
+        return build_credito_confirmation(
+            descripcion, monto, filas, total_dia, credito_id
+        )
+    if comando == "/creditos":
+        try:
+            return build_creditos_list(list_creditos(ws))
+        except Exception:
+            app.logger.exception("Error leyendo la planilla")
+            return "⚠️ No pude leer la planilla. Probá de nuevo en un ratito."
+    if comando == "/borrarcredito":
+        credito_id = parse_credito_id(texto)
+        if credito_id is None:
+            return BORRAR_CREDITO_AYUDA
+        try:
+            borradas = delete_credito(ws, credito_id)
+        except Exception:
+            app.logger.exception("Error borrando el crédito de la planilla")
+            return "⚠️ No pude borrar el crédito. Probá de nuevo en un ratito."
+        return build_borrado_credito(credito_id, borradas)
     return None
 
 

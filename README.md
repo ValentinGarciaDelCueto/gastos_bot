@@ -168,6 +168,8 @@ un recordatorio, por ejemplo), no va a andar en el plan free.
 - `/hoy` — total gastado hoy
 - `/mes` — total gastado en el mes
 - `/credito` — compra en cuotas (ver abajo)
+- `/creditos` — lista los créditos cargados
+- `/borrarcredito <n>` — da de baja un crédito entero
 - `/borraranterior` — borra el último gasto cargado
 - `/start` — instrucciones
 
@@ -184,6 +186,21 @@ así que aparecen solas en el `/mes` que les toca.
 
 Acepta `meses`, `mes`, `cuotas` o `cuota`, y el monto puede ir antes o después
 de la descripción — igual que un gasto normal.
+
+Cada crédito recibe un número, que va en la columna **Crédito** de la planilla
+y te sirve para darlo de baja después:
+
+```
+/creditos              → #1 coderhouse curso · 6 cuotas de $32.400
+/borrarcredito 1       → borra las 6 cuotas de una
+```
+
+> El número del último crédito vuelve a quedar libre si lo borrás, así que
+> mirá `/creditos` antes de borrar en vez de fiarte de un mensaje viejo.
+
+La columna `Crédito` queda vacía en los gastos sueltos. Si tu planilla es
+anterior a esta versión, el bot le agrega la columna solo, sin tocar lo que
+ya tenías cargado.
 
 ## Formatos de monto que entiende
 

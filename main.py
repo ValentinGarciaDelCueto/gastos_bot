@@ -48,7 +48,10 @@ from telegram.ext import (
 # Constantes
 # ---------------------------------------------------------------------------
 TZ = ZoneInfo("America/Argentina/Buenos_Aires")
-HEADERS = ["Fecha", "Hora", "Descripción", "Monto"]
+# La columna "Crédito" queda vacía en los gastos sueltos: solo la usan las
+# cuotas, para saber cuáles pertenecen a la misma compra.
+HEADERS = ["Fecha", "Hora", "Descripción", "Monto", "Crédito"]
+CREDITO_COL = 4  # índice de "Crédito" dentro de la fila
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -169,9 +172,19 @@ def get_worksheet(config: Config):
 
 
 def ensure_headers(ws) -> None:
-    """Si la planilla está vacía, le pone los encabezados."""
-    if not ws.get_all_values():
+    """
+    Si la planilla está vacía, le pone los encabezados. Si ya tiene datos
+    pero le falta alguna columna (viene de una versión anterior, sin
+    "Crédito"), la agrega sin tocar los gastos que ya estaban cargados.
+    """
+    valores = ws.get_all_values()
+    if not valores:
         ws.append_row(HEADERS)
+        return
+
+    actuales = valores[0]
+    for i in range(len(actuales), len(HEADERS)):
+        ws.update_cell(1, i + 1, HEADERS[i])
 
 
 # ---------------------------------------------------------------------------
@@ -319,14 +332,42 @@ def day_total(ws, fecha: str):
     )
 
 
+def credito_id_de_fila(fila):
+    """El id de crédito de una fila, o None si es un gasto suelto."""
+    if len(fila) <= CREDITO_COL:
+        return None
+    valor = str(fila[CREDITO_COL]).strip()
+    return int(valor) if valor.isdigit() else None
+
+
+def next_credito_id(ws) -> int:
+    """
+    El id que le toca al próximo crédito: el mayor que haya en la planilla + 1.
+
+    Si borrás el último crédito, su número vuelve a quedar libre y el que
+    cargues después lo reusa. No llevamos un contador aparte porque habría
+    que guardarlo en algún lado y el /creditos siempre muestra los vigentes.
+    """
+    ids = [
+        cid
+        for cid in (credito_id_de_fila(r) for r in ws.get_all_values()[1:])
+        if cid is not None
+    ]
+    return max(ids, default=0) + 1
+
+
 def record_credito(ws, descripcion: str, monto, cuotas: int, now: datetime):
     """
     Carga las cuotas de una compra en cuotas: una fila por mes, arrancando
     hoy. Las cuotas futuras quedan con fecha futura, así que no ensucian el
     /hoy ni el /mes actuales — aparecen solas cuando llega su mes.
 
-    Devuelve (filas_escritas, total_del_dia).
+    Todas las filas comparten un id, que es lo que después le permite a
+    /borrarcredito borrar la compra entera de una.
+
+    Devuelve (filas_escritas, total_del_dia, id_del_credito).
     """
+    credito_id = next_credito_id(ws)
     hora = now.strftime("%H:%M")
     filas = []
     for i in range(cuotas):
@@ -337,23 +378,131 @@ def record_credito(ws, descripcion: str, monto, cuotas: int, now: datetime):
                 hora,
                 f"{descripcion} ({i + 1}/{cuotas})",
                 monto,
+                credito_id,
             ]
         )
 
     ws.append_rows(filas, value_input_option="USER_ENTERED")
-    return filas, day_total(ws, now.strftime("%d/%m/%Y"))
+    return filas, day_total(ws, now.strftime("%d/%m/%Y")), credito_id
 
 
-def build_credito_confirmation(descripcion, monto, filas, total_dia) -> str:
+def _bloques_contiguos(indices):
+    """[3, 4, 5, 9, 10] -> [(3, 5), (9, 10)]"""
+    bloques = []
+    for i in indices:
+        if bloques and i == bloques[-1][1] + 1:
+            bloques[-1][1] = i
+        else:
+            bloques.append([i, i])
+    return [tuple(b) for b in bloques]
+
+
+def delete_credito(ws, credito_id: int):
+    """
+    Borra todas las cuotas de un crédito. Devuelve las filas borradas (lista
+    vacía si ese id no existe).
+    """
+    rows = ws.get_all_values()
+    indices = [
+        i
+        for i in range(2, len(rows) + 1)  # salteo el encabezado
+        if credito_id_de_fila(rows[i - 1]) == credito_id
+    ]
+    if not indices:
+        return []
+
+    borradas = [rows[i - 1] for i in indices]
+    # De abajo hacia arriba y de a bloques: cada borrado corre hacia arriba
+    # las filas que quedaron debajo, y las cuotas suelen ser contiguas, así
+    # que normalmente esto es una sola llamada a la API.
+    for inicio, fin in reversed(_bloques_contiguos(indices)):
+        ws.delete_rows(inicio, fin)
+    return borradas
+
+
+_SUFIJO_CUOTA_RE = re.compile(r"\s*\(\d+\s*/\s*\d+\)\s*$")
+
+
+def list_creditos(ws):
+    """
+    Resumen de cada crédito cargado, ordenado por id:
+    [{"id": 1, "descripcion": "coderhouse curso", "cuotas": 6, "monto": 32400}]
+    """
+    creditos = {}
+    for fila in ws.get_all_values()[1:]:
+        cid = credito_id_de_fila(fila)
+        if cid is None or len(fila) < 4:
+            continue
+        info = creditos.setdefault(
+            cid,
+            {
+                "id": cid,
+                "descripcion": _SUFIJO_CUOTA_RE.sub("", fila[2]).strip(),
+                "cuotas": 0,
+                "monto": parse_amount(fila[3]) or 0,
+            },
+        )
+        info["cuotas"] += 1
+    return [creditos[cid] for cid in sorted(creditos)]
+
+
+def build_credito_confirmation(descripcion, monto, filas, total_dia, credito_id) -> str:
     """Texto que ve el usuario después de cargar un crédito."""
     cuotas = len(filas)
     return (
-        f"💳 {descripcion}\n"
+        f"💳 {descripcion}  (crédito #{credito_id})\n"
         f"{cuotas} cuotas de {format_money(monto)}"
         f" · Total {format_money(monto * cuotas)}\n"
         f"Primera: {filas[0][0]} · Última: {filas[-1][0]}\n"
-        f"📊 Total hoy: {format_money(total_dia)}"
+        f"📊 Total hoy: {format_money(total_dia)}\n"
+        f"Para darlo de baja: /borrarcredito {credito_id}"
     )
+
+
+def parse_credito_id(text: str):
+    """De '/borrarcredito 2' saca 2. None si no hay un número."""
+    text = text.strip()
+    if text.startswith("/"):
+        _, _, text = text.partition(" ")
+    m = re.search(r"\d+", text)
+    return int(m.group()) if m else None
+
+
+def build_borrado_credito(credito_id: int, borradas) -> str:
+    """Texto de confirmación de /borrarcredito."""
+    if not borradas:
+        return (
+            f"No encontré el crédito #{credito_id}. 🤔\n"
+            "Mirá cuáles tenés con /creditos"
+        )
+    descripcion = _SUFIJO_CUOTA_RE.sub("", borradas[0][2]).strip()
+    monto = parse_amount(borradas[0][3]) or 0
+    return (
+        f"🗑️ Crédito #{credito_id} dado de baja: {descripcion}\n"
+        f"Borré {len(borradas)} cuotas"
+        f" · {format_money(monto * len(borradas))} en total"
+    )
+
+
+def build_creditos_list(creditos) -> str:
+    """Listado de /creditos."""
+    if not creditos:
+        return (
+            "No tenés créditos cargados.\n"
+            "Se cargan con: /credito 32400 coderhouse curso 6 meses"
+        )
+
+    lineas = ["💳 Créditos cargados:", ""]
+    for c in creditos:
+        total = c["monto"] * c["cuotas"]
+        lineas.append(f"#{c['id']} — {c['descripcion']}")
+        lineas.append(
+            f"   {c['cuotas']} cuotas de {format_money(c['monto'])}"
+            f" · Total {format_money(total)}"
+        )
+    lineas.append("")
+    lineas.append("Para dar de baja uno: /borrarcredito <número>")
+    return "\n".join(lineas)
 
 
 def delete_last_expense(ws):
@@ -410,7 +559,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Si comprás en cuotas:\n"
         "  /credito 32400 coderhouse curso 6 meses\n\n"
         "Comandos: /hoy (total del día) · /mes (total del mes) · "
-        "/borraranterior (borra el último gasto cargado)."
+        "/creditos (los que tenés en cuotas) · /borrarcredito (da de baja "
+        "uno) · /borraranterior (borra el último gasto cargado)."
     )
 
 
@@ -459,6 +609,12 @@ CREDITO_AYUDA = (
     "quedan agendadas mes a mes."
 )
 
+BORRAR_CREDITO_AYUDA = (
+    "Decime cuál borrar:\n"
+    "  /borrarcredito 1\n\n"
+    "Borra todas las cuotas de ese crédito. Para ver los números: /creditos"
+)
+
 
 async def credito(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config: Config = context.bot_data["config"]
@@ -474,7 +630,7 @@ async def credito(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         ws = await asyncio.to_thread(get_worksheet, config)
         now = datetime.now(TZ)
-        filas, total_dia = await asyncio.to_thread(
+        filas, total_dia, credito_id = await asyncio.to_thread(
             record_credito, ws, descripcion, monto, cuotas, now
         )
     except Exception:
@@ -485,7 +641,48 @@ async def credito(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        build_credito_confirmation(descripcion, monto, filas, total_dia)
+        build_credito_confirmation(descripcion, monto, filas, total_dia, credito_id)
+    )
+
+
+async def creditos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    config: Config = context.bot_data["config"]
+    if not _autorizado(config, update):
+        return
+    try:
+        ws = await asyncio.to_thread(get_worksheet, config)
+        lista = await asyncio.to_thread(list_creditos, ws)
+    except Exception:
+        logger.exception("Error leyendo la planilla")
+        await update.message.reply_text(
+            "⚠️ No pude leer la planilla. Probá de nuevo en un ratito."
+        )
+        return
+    await update.message.reply_text(build_creditos_list(lista))
+
+
+async def borrar_credito(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    config: Config = context.bot_data["config"]
+    if not _autorizado(config, update):
+        return
+
+    credito_id = parse_credito_id(update.message.text or "")
+    if credito_id is None:
+        await update.message.reply_text(BORRAR_CREDITO_AYUDA)
+        return
+
+    try:
+        ws = await asyncio.to_thread(get_worksheet, config)
+        borradas = await asyncio.to_thread(delete_credito, ws, credito_id)
+    except Exception:
+        logger.exception("Error borrando el crédito de la planilla")
+        await update.message.reply_text(
+            "⚠️ No pude borrar el crédito. Probá de nuevo en un ratito."
+        )
+        return
+
+    await update.message.reply_text(
+        build_borrado_credito(credito_id, borradas)
     )
 
 
@@ -557,6 +754,8 @@ def main():
     app.add_handler(CommandHandler("mes", total_mes))
     app.add_handler(CommandHandler("borraranterior", borrar_anterior))
     app.add_handler(CommandHandler("credito", credito))
+    app.add_handler(CommandHandler("creditos", creditos))
+    app.add_handler(CommandHandler("borrarcredito", borrar_credito))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
